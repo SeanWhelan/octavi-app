@@ -6,8 +6,8 @@ import re
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QTextEdit, QSplitter,
                              QListWidget, QInputDialog, QLineEdit, QLabel)
-from PyQt6.QtGui import QIcon, QPixmap
-from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtGui import QIcon, QPixmap, QPainter
+from PyQt6.QtCore import Qt, QSize, QTimer, QRect
 
 class UdevRulesApp(QMainWindow):
     def __init__(self):
@@ -61,9 +61,11 @@ class UdevRulesApp(QMainWindow):
         btn_dmesg = self.create_button("utilities-terminal", "Dmesg Hidraw", True, 
                                        tooltip="Show hidraw-related kernel messages (requires sudo)")
         btn_create_rule = self.create_button("document-new", "Create Udev Rule", True, 
-                                             tooltip="Create a new udev rule for Octavi (requires sudo)")
-        btn_find_octavi = self.create_button("find", "Find Octavi Device", True, 
-                                             tooltip="Search for Octavi devices and set permissions (requires sudo)")
+                                             tooltip="Create a new udev rule for Octavi (requires sudo)",
+                                             additional_icon="edit-write")
+        btn_find_octavi = self.create_button("edit-find", "Find Octavi Device", True, 
+                                             tooltip="Search for Octavi devices and set permissions (requires sudo)",
+                                             additional_icon="system-search")
 
         btn_list.clicked.connect(self.list_octavi_rules)
         btn_reload.clicked.connect(self.reload_rules)
@@ -123,17 +125,34 @@ class UdevRulesApp(QMainWindow):
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
 
-    def create_button(self, icon_name, text, sudo=False, tooltip=""):
-        button = QPushButton(QIcon.fromTheme(icon_name), text)
+    def create_button(self, icon_name, text, sudo=False, tooltip="", additional_icon=None):
+        button = QPushButton(text)
         button.setIconSize(QSize(24, 24))  # Set a fixed icon size
         button.setStyleSheet("QPushButton { text-align: left; padding-left: 5px; }")
         
-        if sudo:
-            sudo_icon = QIcon.fromTheme("dialog-password")
+        main_icon = QIcon.fromTheme(icon_name)
+        
+        if sudo or additional_icon:
             combined_icon = QIcon()
-            combined_icon.addPixmap(QIcon.fromTheme(icon_name).pixmap(24, 24), QIcon.Mode.Normal, QIcon.State.Off)
-            combined_icon.addPixmap(sudo_icon.pixmap(12, 12), QIcon.Mode.Normal, QIcon.State.On)
+            base_pixmap = main_icon.pixmap(24, 24)
+            combined_pixmap = QPixmap(base_pixmap.size())
+            combined_pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(combined_pixmap)
+            painter.drawPixmap(0, 0, base_pixmap)
+            
+            if sudo:
+                sudo_icon = QIcon.fromTheme("dialog-password")
+                painter.drawPixmap(QRect(12, 12, 12, 12), sudo_icon.pixmap(12, 12))
+            
+            if additional_icon:
+                add_icon = QIcon.fromTheme(additional_icon)
+                painter.drawPixmap(QRect(0, 12, 12, 12), add_icon.pixmap(12, 12))
+            
+            painter.end()
+            combined_icon = QIcon(combined_pixmap)
             button.setIcon(combined_icon)
+        else:
+            button.setIcon(main_icon)
         
         if tooltip:
             button.setToolTip(tooltip)
@@ -170,18 +189,24 @@ class UdevRulesApp(QMainWindow):
     def trigger_rules(self):
         self.run_sudo_command("udevadm trigger")
 
-    def run_sudo_command(self, command):
-        password, ok = QInputDialog.getText(self, "Sudo Password", "Enter sudo password:", QLineEdit.EchoMode.Password)
-        if ok:
-            full_command = f"echo {password} | sudo -S {command}"
-            try:
-                result = subprocess.run(full_command, shell=True, check=True, capture_output=True, text=True)
-                output = result.stdout if result.stdout else "Command executed successfully."
-            except subprocess.CalledProcessError as e:
-                output = f"Error executing command: {e.stderr}"
+    def run_sudo_command(self, command, password=None, callback=None):
+        if password is None:
+            password, ok = QInputDialog.getText(self, "Sudo Password", "Enter sudo password:", QLineEdit.EchoMode.Password)
+            if not ok:
+                self.output_text.setPlainText("Operation cancelled.")
+                return
+
+        full_command = f"echo {password} | sudo -S {command}"
+        try:
+            result = subprocess.run(full_command, shell=True, check=True, capture_output=True, text=True)
+            output = result.stdout if result.stdout else "Command executed successfully."
+            if callback:
+                callback(output)
+            else:
+                self.output_text.setPlainText(output)
+        except subprocess.CalledProcessError as e:
+            output = f"Error executing command: {e.stderr}"
             self.output_text.setPlainText(output)
-        else:
-            self.output_text.setPlainText("Command cancelled.")
 
     def show_hidraw_permissions(self):
         try:
@@ -200,14 +225,28 @@ class UdevRulesApp(QMainWindow):
             self.output_text.setPlainText(f"Error retrieving hidraw permissions: {str(e)}")
 
     def dmesg_hidraw(self):
-        self.run_sudo_command("dmesg | grep hidraw")
+        def highlight_octavi_ifr1(output):
+            lines = output.split('\n')
+            highlighted_lines = []
+            for line in lines:
+                if 'octavi ifr1' in line.lower():
+                    highlighted_lines.append(f"<b>{line}</b>")
+                else:
+                    highlighted_lines.append(line)
+            return '<br>'.join(highlighted_lines)
+
+        def process_output(output):
+            highlighted_output = highlight_octavi_ifr1(output)
+            self.output_text.setHtml(highlighted_output)
+
+        self.run_sudo_command("dmesg | grep -i 'hidraw\\|octavi'", callback=process_output)
 
     def create_udev_rule(self):
         command = 'echo "SUBSYSTEM==\\"usb\\", ATTR{idVendor}==\\"04d8\\", ATTR{idProduct}==\\"e6d6\\", MODE=\\"0666\\"" > /etc/udev/rules.d/99-octavi.rules'
         self.run_sudo_command(command)
         self.output_text.setPlainText("Udev rule created. Please reload rules and trigger udev for changes to take effect.")
 
-    def find_octavi_device(self):
+    def find_octavi_device(self, password):
         VENDOR_ID = "04D8"
         PRODUCT_ID = "E6D6"
         
@@ -220,8 +259,14 @@ class UdevRulesApp(QMainWindow):
         
         for hidraw in hidraw_devices:
             try:
-                device_info = subprocess.check_output(['sudo', 'udevadm', 'info', '--query=all', '--name=' + hidraw], universal_newlines=True)
-                devpath_match = re.search(r'DEVPATH=.*0003:([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})', device_info)
+                device_info = subprocess.check_output(['sudo', '-S', 'udevadm', 'info', '--query=all', '--name=' + hidraw], 
+                                                  input=password if isinstance(password, bytes) else password.encode(),
+                                                  stderr=subprocess.PIPE)
+                
+                # Decode the bytes to a string
+                device_info_str = device_info.decode('utf-8')
+                
+                devpath_match = re.search(r'DEVPATH=.*0003:([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})', device_info_str)
                 
                 if devpath_match:
                     current_vendor_id, current_product_id = devpath_match.groups()
@@ -236,7 +281,7 @@ class UdevRulesApp(QMainWindow):
             for device in found_devices:
                 result += f"{device}\n"
                 try:
-                    subprocess.run(['sudo', 'chmod', '0666', device], check=True)
+                    subprocess.run(['sudo', '-S', 'chmod', '0666', device], input=password.encode(), check=True)
                     result += f"Applied chmod 0666 to {device}\n"
                 except subprocess.CalledProcessError:
                     result += f"Failed to apply chmod 0666 to {device}\n"
@@ -251,7 +296,7 @@ class UdevRulesApp(QMainWindow):
         if ok:
             self.output_text.clear()
             self.output_text.setPlainText("Preparing to search for Octavi IFR1 devices...")
-            QTimer.singleShot(100, lambda: self.run_sudo_command(f"python3 -c \"import sys; sys.path.append('{os.getcwd()}'); from {os.path.basename(__file__)[:-3]} import UdevRulesApp; UdevRulesApp().find_octavi_device()\"", password))
+            QTimer.singleShot(100, lambda: self.find_octavi_device(password))
         else:
             self.output_text.setPlainText("Operation cancelled.")
 
