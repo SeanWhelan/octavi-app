@@ -22,17 +22,17 @@ This application provides a graphical interface to manage udev rules for Octavi 
 
 1. Clone this repository:
    ```
-   git clone https://github.com/yourusername/octavi-udev-manager.git
+   git clone https://github.com/SeanWhelan/octavi-app.git
    ```
 
 2. Install the required dependencies:
    ```
-   pip install PyQt6
+   pip install -r requirements.txt
    ```
 
 3. Run the application:
    ```
-   python octavi_check.py
+   python octavi-app.py
    ```
 
 ## Usage
